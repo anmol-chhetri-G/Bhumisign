@@ -3,5 +3,9 @@ dist
 coverage
 out
 *.log
-
 BHUMISIGN_BUILD.md
+*.pdf
+brief_*.txt
+scratch/
+__pycache__/
+*.pyc

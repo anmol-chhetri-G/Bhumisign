@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { utf8, fromUtf8 } from "../src/crypto/bytes";
 import { canonicalize } from "../src/crypto/canonical";
-import { exportPublicKey, generateEcdhKeyPair, generateSigningKeyPair, signMessage } from "../src/crypto/primitives";
-import { CertificateAuthority, createEnrollmentRequest, enrollIdentity } from "../src/pki/ca";
+import { hybridDecrypt, hybridEncrypt } from "../src/crypto/hybrid";
+import { exportPublicKey, generateEcdhKeyPair, generateSigningKeyPair, signMessage, verifyMessage } from "../src/crypto/primitives";
+import {
+  CertificateAuthority,
+  createEnrollmentRequest,
+  enrollIdentity,
+  enrollProtectedIdentity,
+  unlockProtectedIdentity,
+} from "../src/pki/ca";
 import type { Certificate, Crl, EnrollmentRequest } from "../src/pki/types";
 import { verifyCertificate } from "../src/pki/verify";
 import { T0, at, makeWorld } from "./helpers";
@@ -141,6 +149,32 @@ describe("enrollment (proof of possession and role profiles)", () => {
   it("enrollIdentity throws on failure", async () => {
     const ca = await CertificateAuthority.createRoot("CA", T0, 1);
     await expect(enrollIdentity(ca, { id: "x", name: "X", role: "CITIZEN" }, new Date(T0.getTime() + 2 * DAY))).rejects.toThrow("enrollment failed");
+  });
+
+  it("enrollProtectedIdentity wraps keys and unlockProtectedIdentity restores non-extractable keys", async () => {
+    const ca = await CertificateAuthority.createRoot("CA", T0);
+    const pass = "correct horse battery staple";
+    const protectedId = await enrollProtectedIdentity(ca, { id: "p1", name: "Protected", role: "CITIZEN" }, pass, at(1), 365, 1000);
+    expect(protectedId.wrappedSigningKey.label).toBe(protectedId.certificate.body.serial);
+    expect(protectedId.wrappedEncryptionKey).not.toBeNull();
+
+    await expect(unlockProtectedIdentity(protectedId, "wrong passphrase!", 1000)).rejects.toThrow("wrong passphrase");
+
+    const unlocked = await unlockProtectedIdentity(protectedId, pass, 1000);
+    await expect(crypto.subtle.exportKey("pkcs8", unlocked.privateKey)).rejects.toThrow();
+    expect(unlocked.encryption).not.toBeNull();
+    if (unlocked.encryption) {
+      await expect(crypto.subtle.exportKey("pkcs8", unlocked.encryption.privateKey)).rejects.toThrow();
+      const env = await hybridEncrypt(unlocked.encryption.publicKey, utf8("secret"), utf8("aad"));
+      expect(fromUtf8(await hybridDecrypt(unlocked.encryption, env, utf8("aad")))).toBe("secret");
+    }
+
+    const sig = await signMessage(unlocked.privateKey, "transfer-intent", "payload");
+    expect(await verifyMessage(unlocked.signing.publicKey, "transfer-intent", "payload", sig)).toBe(true);
+
+    // Covers the branch where no encryption key is wrapped
+    const signOnly = await unlockProtectedIdentity({ ...protectedId, wrappedEncryptionKey: null }, pass, 1000);
+    expect(signOnly.encryption).toBeNull();
   });
 });
 

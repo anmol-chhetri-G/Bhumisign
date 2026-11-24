@@ -5,7 +5,7 @@
 **Browser-only PKI for land titles — every key, signature and check runs in your browser.**
 
 [![CI](https://github.com/anmol-chhetri-G/Bhumisign/actions/workflows/ci.yml/badge.svg)](https://github.com/anmol-chhetri-G/Bhumisign/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-108_passed-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-123_passed-brightgreen?style=flat-square)
 ![Coverage](https://img.shields.io/badge/line_coverage-99.2%25-brightgreen?style=flat-square)
 ![Mutation](https://img.shields.io/badge/mutants-25%2F26_caught-blue?style=flat-square)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)
@@ -47,30 +47,26 @@ sequenceDiagram
     participant R as Registry
     participant V as Bank (Verifier)
 
-    S->>B: offer {H(title v0), buyer, nonce, expiry} + signature
-    B->>O: evidence {offer, acceptance {H(offer)}} + signatures
-    O->>R: title v1 {prevHash = H(v0), evidenceHash} + signature
-    Note over R: append only if head == v0 (atomic compare-and-swap)
+    S->>B: offer {H(title v0), buyer, nonce, expiry}
+    B->>O: evidence {offer, acceptance}
+    O->>R: title v1 {prevHash = H(v0), evidenceHash}
+    Note over R: Atomic CAS append (head == v0)
     R->>V: full parcel history + encrypted deed
-    Note over V: re-verify certificates, signatures,<br/>hash links, consent and CRL — offline
+    Note over V: Offline verify: signatures, hash chain & CRL
 ```
 
 ### Layering
 
 ```mermaid
 flowchart TD
-    UI["React demo · App.tsx + demo/scenario.ts"] --> LAND
-    subgraph LAND["src/land — ownership"]
-        L1["title · transfer · registry (atomic append) · verify (link & history)"]
-    end
+    UI["<b>React UI & Demo</b><br/>App.tsx · demo/scenario.ts (12-step story)"]
+    LAND["<b>src/land — Ownership</b><br/>title · transfer · registry (atomic append) · verify (link & history)"]
+    PKI["<b>src/pki — Trust</b><br/>ca (PoP enrolment, CRL) · verify (pinned anchor, role profiles, revocation)"]
+    CRYPTO["<b>src/crypto — Web Crypto API Only</b><br/>primitives (ECDSA · AES-GCM · ECDH · HKDF · PBKDF2) · keystore · hybrid · canonical · bytes"]
+
+    UI --> LAND
     LAND --> PKI
-    subgraph PKI["src/pki — trust"]
-        P1["ca (PoP enrolment, CRL) · verify (pinned anchor, role profiles, revocation)"]
-    end
     PKI --> CRYPTO
-    subgraph CRYPTO["src/crypto — Web Crypto API only"]
-        C1["primitives (ECDSA · AES-GCM · ECDH · HKDF · PBKDF2) · keystore · hybrid · canonical · bytes"]
-    end
 ```
 
 **Phases:** ① Set-up & enrolment (root CA, proof-of-possession, CRL) → ② Issuance (seq 0) → ③ Transfer (offer → acceptance → atomic append) → ④ Third-party verification.
@@ -137,7 +133,7 @@ cd Bhumisign
 
 npm ci               # exact pinned versions from package-lock.json
 npm run typecheck    # strict TypeScript, zero errors
-npm test             # 108 passing, 1 optional export skipped
+npm test             # 123 passing, 1 optional export skipped
 npm run coverage     # thresholds enforced in vite.config.ts
 npm run build        # type-check + production bundle
 npm run dev          # http://localhost:5173 → click "Run full scenario"
@@ -148,10 +144,10 @@ npm run dev          # http://localhost:5173 → click "Run full scenario"
 
 ## 🖥️ Browser demo
 
-`npm run dev`, then **Run full scenario**: 12 rows — the honest flow accepted, every attack rejected with its exact error code (`HEAD_MISMATCH`, `NOT_OWNER`, `REVOKED`, `USAGE_NOT_PERMITTED`, …). No row red, no console errors, no cross-origin network requests.
+`npm run dev`, then **Run full scenario**: 14 rows — the honest flow accepted, keystore unwrap verified, every attack rejected with its exact error code (`HEAD_MISMATCH`, `NOT_OWNER`, `REVOKED`, `USAGE_NOT_PERMITTED`, `BAD_PASSPHRASE`, …). Below the table, an interactive **Document / File Signing** tool signs text or uploaded binary files with a non-extractable ECDSA P-256 key and verifies tampering. No row red, no console errors, no cross-origin network requests.
 
 <!-- Uncomment after adding a screenshot:
-<p align="center"><img src="docs/demo.png" alt="12-row scenario table" width="800"></p>
+<p align="center"><img src="docs/demo.png" alt="14-row scenario table" width="800"></p>
 -->
 
 ## 🧪 Verification
@@ -159,8 +155,8 @@ npm run dev          # http://localhost:5173 → click "Run full scenario"
 | Command | What it proves |
 | :--- | :--- |
 | `npm run typecheck` | Type-correct under `strict` + `noUncheckedIndexedAccess` |
-| `npm test` | 108 behaviours hold, including every attack in the scenario |
-| `npm run coverage` | 99.2% lines · 94.7% statements · 90.6% branches · 100% functions |
+| `npm test` | 123 behaviours hold, including 3 real-world use cases, MITM/forward secrecy, and file signing |
+| `npm run coverage` | 99.2% lines · 95.0% statements · 90.6% branches · 100% functions |
 | `python3 scripts/mutate.py` | The suite notices broken code: 25/26 mutants caught, 1 equivalent |
 | `python3 scripts/verify_with_openssl.py …` | An implementation I did not write accepts my signatures |
 
@@ -215,10 +211,10 @@ Bhumisign/
 │   ├── crypto/                # bytes · canonical · primitives · keystore · hybrid
 │   ├── pki/                   # types · validate · verify · ca
 │   ├── land/                  # types · title · transfer · verify · registry · validate
-│   ├── demo/scenario.ts       # 12-step end-to-end story (honest flow + attacks)
-│   ├── App.tsx · main.tsx     # thin React UI — the marks are in the crypto
+│   ├── demo/scenario.ts       # 14-step end-to-end story (honest flow, keystore, attacks)
+│   ├── App.tsx · main.tsx     # thin React UI (scenario table + interactive file signing)
 │   └── result.ts              # shared error vocabulary (no throwing verifiers)
-├── tests/                     # 6 test suites (108 tests + 1 optional export) + helpers.ts
+├── tests/                     # 7 test files (123 tests + 1 optional export) + helpers.ts
 ├── scripts/                   # mutate.py · verify_with_openssl.py
 └── vite.config.ts             # coverage thresholds enforced
 ```

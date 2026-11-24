@@ -1,6 +1,11 @@
 import { utf8, fromUtf8 } from "../crypto/bytes";
 import { hybridDecrypt, hybridEncrypt } from "../crypto/hybrid";
-import { CertificateAuthority, enrollIdentity } from "../pki/ca";
+import {
+  CertificateAuthority,
+  enrollIdentity,
+  enrollProtectedIdentity,
+  unlockProtectedIdentity,
+} from "../pki/ca";
 import type { Crl, TrustContext } from "../pki/types";
 import { verifyCertificate } from "../pki/verify";
 import { Registry } from "../land/registry";
@@ -27,10 +32,16 @@ export async function runScenario(start: Date = new Date()): Promise<LogEntry[]>
     log.push({ step, expected, outcome, detail: result.ok ? "ok" : `${result.error}${result.detail ? `: ${result.detail}` : ""}`, pass: outcome === expected });
   };
 
-  // Phase 1: set-up and enrolment
+  // Phase 1: set-up and enrolment (Sita enrolls directly into a password-protected keystore)
   const ca = await CertificateAuthority.createRoot("Nepal Land Registry Root CA (demo)", tick());
   const officer = await enrollIdentity(ca, { id: "lro-007", name: "LRO Officer", role: "LRO_OFFICER" }, tick());
-  const sita = await enrollIdentity(ca, { id: "np-1001", name: "Sita Sharma", role: "CITIZEN" }, tick());
+  const sitaPass = "Sita@SecretPassphrase2026!";
+  const sitaProtected = await enrollProtectedIdentity(
+    ca,
+    { id: "np-1001", name: "Sita Sharma", role: "CITIZEN" },
+    sitaPass,
+    tick(),
+  );
   const ram = await enrollIdentity(ca, { id: "np-1002", name: "Ram Thapa", role: "CITIZEN" }, tick());
   const mallory = await enrollIdentity(ca, { id: "np-6666", name: "Mallory", role: "CITIZEN" }, tick());
   const bank = await enrollIdentity(ca, { id: "bank-01", name: "Demo Bank", role: "VERIFIER" }, tick());
@@ -38,13 +49,25 @@ export async function runScenario(start: Date = new Date()): Promise<LogEntry[]>
   const ctx = (): TrustContext => ({ anchor: ca.certificate, crl, now: new Date(clock), directory: ca.directory });
   record("Enrolment: officer, citizens and bank certified", "accept", await verifyCertificate(bank.certificate, ctx(), { usage: "dataEncrypt" }));
 
+  // Key storage: wrong passphrase is rejected; right passphrase restores a non-extractable key
+  const wrongPassResult = await unlockProtectedIdentity(sitaProtected, "wrong-passphrase").then(
+    () => ({ ok: true }),
+    () => ({ ok: false, error: "BAD_PASSPHRASE", detail: "wrong passphrase or corrupted key blob" }),
+  );
+  record("Keystore: Incorrect passphrase fails to unwrap key", "reject", wrongPassResult);
+  const sita = await unlockProtectedIdentity(sitaProtected, sitaPass);
+  const nonExtractable = await globalThis.crypto.subtle
+    .exportKey("pkcs8", sita.privateKey)
+    .then(() => false, () => true);
+  record("Keystore: Sita unlocks non-extractable key with passphrase", "accept", { ok: nonExtractable });
+
   // Phase 2: issue the first title
   const registry = new Registry();
   const issued = await issueTitle(officer, { parcelId: "KTM-W10-K1234", owner: sita.certificate, areaSqm: 2400, now: tick() });
   if (!issued.ok) throw new Error("issuance failed");
   record("Issue title to Sita", "accept", await registry.append({ title: issued.title, evidence: null }, ctx()));
 
-  // Phase 3: transfer Sita -> Ram
+  // Phase 3: transfer Sita -> Ram (Sita signs using her unlocked non-extractable key)
   const intent = await createTransferIntent(sita, { title: issued.title, buyer: ram.certificate, now: tick() });
   const acceptance = await acceptTransferIntent(ram, intent, tick());
   const evidence = { intent, acceptance };

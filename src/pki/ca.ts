@@ -1,14 +1,18 @@
 import { canonicalize } from "../crypto/canonical";
 import { toHex } from "../crypto/bytes";
 import {
+  PBKDF2_ITERATIONS,
   exportPublicKey,
   generateEcdhKeyPair,
   generateSigningKeyPair,
+  importEcdhPublicKey,
   importSigningPublicKey,
   randomBytes,
   signMessage,
   verifyMessage,
 } from "../crypto/primitives";
+import { unwrapPrivateKey, wrapPrivateKey } from "../crypto/keystore";
+import type { WrappedKey } from "../crypto/keystore";
 import { fail } from "../result";
 import type { Failure } from "../result";
 import type {
@@ -152,6 +156,12 @@ export interface Identity extends Signer {
   encryption: CryptoKeyPair | null;
 }
 
+export interface ProtectedIdentity {
+  certificate: Certificate;
+  wrappedSigningKey: WrappedKey;
+  wrappedEncryptionKey: WrappedKey | null;
+}
+
 const DEFAULT_USAGES: Record<Subject["role"], CertUsage[]> = {
   ROOT_CA: ["certSign", "crlSign"],
   LRO_OFFICER: ["titleSign", "dataEncrypt"],
@@ -159,18 +169,71 @@ const DEFAULT_USAGES: Record<Subject["role"], CertUsage[]> = {
   VERIFIER: ["dataEncrypt"],
 };
 
+async function createAndIssueIdentity(
+  ca: CertificateAuthority,
+  subject: Subject,
+  now: Date,
+  validityDays: number,
+  extractable: boolean,
+): Promise<Identity> {
+  const usages = DEFAULT_USAGES[subject.role];
+  const signing = await generateSigningKeyPair(extractable);
+  const encryption = usages.includes("dataEncrypt") ? await generateEcdhKeyPair(extractable) : null;
+  const request = await createEnrollmentRequest(subject, usages, signing, encryption?.publicKey ?? null);
+  const result = await ca.issue(request, now, validityDays);
+  if (!result.ok) throw new Error(`enrollment failed: ${result.error}`);
+  return { certificate: result.certificate, privateKey: signing.privateKey, signing, encryption };
+}
+
 /** Generates fresh key pairs, builds the enrollment request and has the CA certify it. */
-export async function enrollIdentity(
+export function enrollIdentity(
   ca: CertificateAuthority,
   subject: Subject,
   now: Date,
   validityDays = 365,
 ): Promise<Identity> {
-  const usages = DEFAULT_USAGES[subject.role];
-  const signing = await generateSigningKeyPair(true);
-  const encryption = usages.includes("dataEncrypt") ? await generateEcdhKeyPair(true) : null;
-  const request = await createEnrollmentRequest(subject, usages, signing, encryption?.publicKey ?? null);
-  const result = await ca.issue(request, now, validityDays);
-  if (!result.ok) throw new Error(`enrollment failed: ${result.error}`);
-  return { certificate: result.certificate, privateKey: signing.privateKey, signing, encryption };
+  return createAndIssueIdentity(ca, subject, now, validityDays, true);
+}
+
+/**
+ * Enrolls a new identity and immediately wraps its private keys into password-protected
+ * keystore blobs, leaving no raw private keys in the returned object.
+ */
+export async function enrollProtectedIdentity(
+  ca: CertificateAuthority,
+  subject: Subject,
+  passphrase: string,
+  now: Date,
+  validityDays = 365,
+  iterations = PBKDF2_ITERATIONS,
+): Promise<ProtectedIdentity> {
+  const raw = await createAndIssueIdentity(ca, subject, now, validityDays, true);
+  const serial = raw.certificate.body.serial;
+  const wrappedSigningKey = await wrapPrivateKey(raw.signing.privateKey, "ECDSA", passphrase, serial, iterations);
+  const wrappedEncryptionKey = raw.encryption
+    ? await wrapPrivateKey(raw.encryption.privateKey, "ECDH", passphrase, serial, iterations)
+    : null;
+  return { certificate: raw.certificate, wrappedSigningKey, wrappedEncryptionKey };
+}
+
+/** Unwraps a protected identity into an active Identity whose private keys are non-extractable. */
+export async function unlockProtectedIdentity(
+  protectedId: ProtectedIdentity,
+  passphrase: string,
+  minIterations?: number,
+): Promise<Identity> {
+  const signPrivate = await unwrapPrivateKey(protectedId.wrappedSigningKey, passphrase, minIterations);
+  const signPublic = await importSigningPublicKey(protectedId.certificate.body.signKey);
+  let encryption: CryptoKeyPair | null = null;
+  if (protectedId.wrappedEncryptionKey && protectedId.certificate.body.encKey) {
+    const encPrivate = await unwrapPrivateKey(protectedId.wrappedEncryptionKey, passphrase, minIterations);
+    const encPublic = await importEcdhPublicKey(protectedId.certificate.body.encKey);
+    encryption = { publicKey: encPublic, privateKey: encPrivate };
+  }
+  return {
+    certificate: protectedId.certificate,
+    privateKey: signPrivate,
+    signing: { publicKey: signPublic, privateKey: signPrivate },
+    encryption,
+  };
 }

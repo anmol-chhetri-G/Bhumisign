@@ -15,7 +15,9 @@ import {
   pbkdf2Sha256,
   randomBytes,
   sha256Hex,
+  signFile,
   signMessage,
+  verifyFile,
   verifyMessage,
 } from "../src/crypto/primitives";
 
@@ -163,5 +165,78 @@ describe("ECDH", () => {
     const s2 = await ecdhDeriveSecret(b.privateKey, a.publicKey);
     expect(s1).toHaveLength(32);
     expect(toHex(s1)).toBe(toHex(s2));
+  });
+});
+
+describe("signFile and verifyFile (generic document signing)", () => {
+  it("signs and verifies an empty buffer (0 bytes)", async () => {
+    const keys = await generateSigningKeyPair();
+    const emptyBytes = new Uint8Array(0);
+    const sig = await signFile(keys.privateKey, emptyBytes);
+    expect(fromBase64Url(sig)).toHaveLength(64);
+    expect(await verifyFile(keys.publicKey, emptyBytes, sig)).toBe(true);
+  });
+
+  it("signs and verifies a genuinely binary buffer (null bytes and high-bit bytes)", async () => {
+    const keys = await generateSigningKeyPair();
+    // Genuinely binary payload containing null bytes, high bits, random raw bytes
+    const binaryBytes = new Uint8Array([0x00, 0xff, 0xfe, 0x80, 0x7f, 0x00, 0xaa, 0x55, 0x10, 0x00, 0xef]);
+    const sig = await signFile(keys.privateKey, binaryBytes);
+    expect(fromBase64Url(sig)).toHaveLength(64);
+    expect(await verifyFile(keys.publicKey, binaryBytes, sig)).toBe(true);
+
+    // Tampering any byte in the binary payload fails verification
+    const tampered = new Uint8Array(binaryBytes);
+    tampered[0] = 0x01; // flip null byte
+    expect(await verifyFile(keys.publicKey, tampered, sig)).toBe(false);
+  });
+
+  it("signs and verifies a simulated PDF/document buffer", async () => {
+    const keys = await generateSigningKeyPair();
+    const fileBytes = utf8("%PDF-1.7 simulated land deed payload with signatures");
+    const sig = await signFile(keys.privateKey, fileBytes);
+    expect(fromBase64Url(sig)).toHaveLength(64);
+    expect(await verifyFile(keys.publicKey, fileBytes, sig)).toBe(true);
+  });
+
+  it("detects single-byte tampering in file content", async () => {
+    const keys = await generateSigningKeyPair();
+    const fileBytes = utf8("important document content");
+    const sig = await signFile(keys.privateKey, fileBytes);
+
+    const tampered = new Uint8Array(fileBytes);
+    tampered[0] = (tampered[0] ?? 0) ^ 1;
+    expect(await verifyFile(keys.publicKey, tampered, sig)).toBe(false);
+  });
+
+  it("rejects verification with a different key", async () => {
+    const a = await generateSigningKeyPair();
+    const b = await generateSigningKeyPair();
+    const fileBytes = utf8("test file content");
+    const sig = await signFile(a.privateKey, fileBytes);
+    expect(await verifyFile(b.publicKey, fileBytes, sig)).toBe(false);
+  });
+
+  it("resists cross-purpose replay with other signature contexts", async () => {
+    const keys = await generateSigningKeyPair();
+    const fileBytes = utf8("sample file");
+    const digest = await sha256Hex(fileBytes);
+    const fileSig = await signFile(keys.privateKey, fileBytes);
+
+    // A file signature cannot verify as a title signature
+    expect(await verifyMessage(keys.publicKey, "title", digest, fileSig)).toBe(false);
+
+    // A title signature over the digest cannot verify as a file signature
+    const titleSig = await signMessage(keys.privateKey, "title", digest);
+    expect(await verifyFile(keys.publicKey, fileBytes, titleSig)).toBe(false);
+  });
+
+  it("handles malformed signatures and invalid inputs without throwing", async () => {
+    const keys = await generateSigningKeyPair();
+    const fileBytes = utf8("hello");
+    expect(await verifyFile(keys.publicKey, fileBytes, "invalid_sig")).toBe(false);
+    expect(await verifyFile(keys.publicKey, fileBytes, "")).toBe(false);
+    // Malformed input buffer (null/undefined as never) returns false without throwing
+    expect(await verifyFile(keys.publicKey, null as never, "AAAA")).toBe(false);
   });
 });

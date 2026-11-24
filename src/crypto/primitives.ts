@@ -88,6 +88,26 @@ export async function verifyMessage(
   }
 }
 
+/** Signs arbitrary binary file bytes: hashes with SHA-256 and signs with context "file-sign". */
+export async function signFile(privateKey: CryptoKey, fileBytes: Bytes): Promise<string> {
+  const digest = await sha256Hex(fileBytes);
+  return signMessage(privateKey, "file-sign", digest);
+}
+
+/** Verifies an ECDSA signature over arbitrary binary file bytes. Returns false (never throws). */
+export async function verifyFile(
+  publicKey: CryptoKey,
+  fileBytes: Bytes,
+  signature: string,
+): Promise<boolean> {
+  try {
+    const digest = await sha256Hex(fileBytes);
+    return await verifyMessage(publicKey, "file-sign", digest, signature);
+  } catch {
+    return false;
+  }
+}
+
 /* ---------- AES-256-GCM ---------- */
 
 export interface GcmBox {

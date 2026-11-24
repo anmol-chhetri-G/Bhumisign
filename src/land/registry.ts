@@ -19,19 +19,21 @@ export class Registry {
   private readonly usedNonces = new Set<string>();
 
   head(parcelId: string): TitleRecord | undefined {
-    return this.chains.get(parcelId)?.at(-1);
+    const record = this.chains.get(parcelId)?.at(-1);
+    return record ? structuredClone(record) : undefined;
   }
 
   history(parcelId: string): readonly TitleRecord[] {
-    return [...(this.chains.get(parcelId) ?? [])];
+    return (this.chains.get(parcelId) ?? []).map((record) => structuredClone(record));
   }
 
   hasNonce(nonce: string): boolean {
     return this.usedNonces.has(nonce);
   }
 
-  async append(record: TitleRecord, ctx: TrustContext): Promise<VerifyResult> {
-    if (!isTitleRecord(record)) return fail("MALFORMED");
+  async append(rawRecord: TitleRecord, ctx: TrustContext): Promise<VerifyResult> {
+    if (!isTitleRecord(rawRecord)) return fail("MALFORMED");
+    const record = structuredClone(rawRecord);
     const issuedAt = parseUtc(record.title.body.issuedAt) ?? 0;
     if (Math.abs(ctx.now.getTime() - issuedAt) > MAX_CLOCK_SKEW_MS) return fail("CLOCK_SKEW");
     const parcelId = record.title.body.parcelId;

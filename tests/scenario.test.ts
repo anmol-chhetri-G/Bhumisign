@@ -9,9 +9,10 @@ import { PARCEL, makeWorld } from "./helpers";
 describe("end-to-end scenario", () => {
   it("every honest step is accepted and every attack is rejected, with the expected reason", async () => {
     const log = await runScenario(new Date("2026-11-24T09:00:00.000Z"));
-    expect(log).toHaveLength(12);
+    expect(log).toHaveLength(14);
     expect(log.filter((e) => !e.pass)).toEqual([]);
     const reason = (prefix: string) => log.find((e) => e.step.startsWith(prefix))?.detail ?? "";
+    expect(reason("Keystore: Incorrect")).toContain("BAD_PASSPHRASE");
     expect(reason("Double sale")).toContain("HEAD_MISMATCH");
     expect(reason("Replay")).toContain("HEAD_MISMATCH");
     expect(reason("Mallory sells")).toContain("NOT_OWNER");

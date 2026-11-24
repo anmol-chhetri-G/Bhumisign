@@ -70,11 +70,49 @@ describe("transfer happy path", () => {
     expect(await verifyHistory(w.registry.history(PARCEL), w.ctx(at(40)))).toEqual({ ok: true });
   });
 
-  it("history() returns a copy; mutating it does not affect the registry", async () => {
+  it("history() and head() return deep copies; mutating them does not affect the registry", async () => {
     const w = await makeWorld();
-    (w.registry.history(PARCEL) as TitleRecord[]).pop();
+    const records = w.registry.history(PARCEL) as TitleRecord[];
+    records.pop();
     expect(w.registry.history(PARCEL)).toHaveLength(1);
     expect(w.registry.history("unknown")).toEqual([]);
+
+    const head = w.registry.head(PARCEL);
+    expect(head).toBeDefined();
+    if (head) head.title.body.areaSqm = 999999;
+    expect(w.registry.head(PARCEL)?.title.body.areaSqm).toBe(2400);
+
+    const hist = w.registry.history(PARCEL);
+    hist[0]!.title.body.areaSqm = 888888;
+    expect(w.registry.history(PARCEL)[0]?.title.body.areaSqm).toBe(2400);
+  });
+
+  it("mutating caller input while append() is pending does not affect verification or storage", async () => {
+    const w = await makeWorld();
+    const reg = new Registry();
+    const input: TitleRecord = { title: structuredClone(w.title), evidence: null };
+
+    // Concurrently mutate the caller's input object while verification is in-flight
+    const appendPromise = reg.append(input, w.ctx(at(5)));
+    input.title.body.areaSqm = 999999;
+    input.title.body.ownerSerial = w.mallory.certificate.body.serial;
+
+    const result = await appendPromise;
+    expect(result.ok).toBe(true);
+    expect(reg.head(PARCEL)?.title.body.areaSqm).toBe(2400);
+    expect(reg.head(PARCEL)?.title.body.ownerSerial).toBe(w.sita.certificate.body.serial);
+  });
+
+  it("mutating caller input after append() succeeds does not affect stored records", async () => {
+    const w = await makeWorld();
+    const inputRecord: TitleRecord = { title: structuredClone(w.title), evidence: null };
+    const reg = new Registry();
+    const result = await reg.append(inputRecord, w.ctx(at(5)));
+    expect(result.ok).toBe(true);
+
+    inputRecord.title.body.areaSqm = 777777;
+    expect(reg.head(PARCEL)?.title.body.areaSqm).toBe(2400);
+    expect(reg.history(PARCEL)[0]?.title.body.areaSqm).toBe(2400);
   });
 });
 
